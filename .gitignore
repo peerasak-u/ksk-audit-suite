@@ -12,7 +12,14 @@ Icon
 
 # Skill output — contains real client data
 6_ผลจากสกิล/
+6_ผลจากสกิล_backup*/
+7_ผลการทดลอง*/
+8_ผลการทดลอง*/
+9_ผลการทดลอง*/
 Icon
 
 __pycache__/
 *.pyc
+
+# Packaged .skill files (build output — regenerate with scripts/package_skills.sh)
+dist/
