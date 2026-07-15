@@ -1,0 +1,18 @@
+# Sample client data — sensitive, real client documents/financials
+4_ตัวอย่างไฟล์ลูกค้า/
+5_ตัวอย่างไฟล์ผลลัพธ์/
+
+# Database exports — sensitive client/pricing data
+Database*.xlsx
+Database*.csv
+
+# macOS
+.DS_Store
+Icon
+
+# Skill output — contains real client data
+6_ผลจากสกิล/
+Icon
+
+__pycache__/
+*.pyc
