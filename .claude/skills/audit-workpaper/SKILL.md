@@ -27,6 +27,13 @@ scaffold and the live formula chain.
    `audit-financials`. Do not diverge from it — change the contract first if needed.
 6. **v1 = บจ. going-concern only.** หจก. (partnership), งบเลิก (liquidation), and ปีแรก
    (first year) need their own variants (contract §6); the script warns if it detects หจก.
+7. **The `งบการเงิน` sheet is a PRINTED deliverable, not a grid.** It gets bound behind
+   `ใบปะหน้างบการเงิน.docx` and the auditor's report, so it starts at **page 4** and every
+   ground-truth setting (A4 portrait, `$A$1:$G$n` print area, Browallia New 14, uniform 21pt
+   rows, D/F as thin print gutters, one statement per page) is a **locked format** in
+   contract §10 — not a preference. The director sign-off block prints on the balance-sheet
+   page; its name comes from CONTEXT `director_1` and is left as a dotted blank (with a
+   warning) whenever that field is unresolved or flagged ⚠ — never guessed.
 
 ## Step 1: Locate the client TB (optional but recommended)
 
@@ -68,7 +75,7 @@ Tell the user, in a few lines:
 
 | sheet | what the human does |
 |---|---|
-| `งบการเงิน` | nothing — auto-computes (BS + IS + equity + note-detail via formulas) |
+| `งบการเงิน` | nothing — auto-computes (BS + IS + equity + note-detail via formulas), and is already laid out as printable A4 pages (§10). Fill the sign-off name only if it printed as a dotted blank. |
 | `TB` | paste/adjust the trial balance; post AJEs into cols E/F |
 | `Mapping` | **classify every account in col H** from the dropdown (the one judgment cell) |
 | `ปรับปรุง` | enter adjusting entries (never auto-generated) |

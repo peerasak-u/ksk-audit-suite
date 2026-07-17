@@ -30,6 +30,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.pagebreak import Break
+from openpyxl.worksheet.page import PageMargins
+from openpyxl.worksheet.properties import PageSetupProperties
 
 FS = "งบการเงิน"          # financial-statements sheet name
 MAP = "Mapping"
@@ -37,7 +40,20 @@ TB = "TB"
 AJE = "ปรับปรุง"
 TAX = "ภาษีเงินได้"
 CAPREF = "_captions"      # hidden helper sheet holding the controlled vocabulary
-NUMFMT = "#,##0.00;(#,##0.00)"
+NUMFMT = r"_(* #,##0.00_);_(* \(#,##0.00\);_(* \-??_);_(@_)"   # accounting format (contract §10.1)
+
+# ── Print contract (docs/financials-contract.md §10) ──────────────────────────────
+# The งบ is printed and bound behind the cover + auditor's report, so it is page 4 onward.
+# These values are a LOCKED format taken from all 10 ground-truth files, not preferences.
+DEFAULT_FONT = "Cordia New"      # workbook Normal style
+FS_FONT = "Browallia New"        # every cell on the งบการเงิน sheet
+FS_SIZE = 14
+FOOTER_FONT = "Angsana New"
+ROW_H = 21.0                     # uniform row height — what makes the page grid predictable
+ROWS_PER_PAGE = 36               # 36 × 21pt = 756pt ≤ 771pt printable height of A4
+FIRST_PAGE_NUMBER = 4            # ใบปะหน้า + หน้ารายงานผู้สอบ occupy pages 1–3
+COL_W = {"A": 31.7, "B": 16.7, "C": 16.7, "D": 0.9, "E": 16.7, "F": 0.9, "G": 16.7}
+CHECK_COL = 9                    # column I — deliberately outside the $A:$G print area
 
 # ── Controlled caption vocabulary (docs/financials-contract.md §4) ────────────────
 # side = which Mapping column carries the natural balance: "C" = ยอด เดบิต, "D" = ยอด เครดิต.
@@ -113,13 +129,43 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
-def parse_context(path: Path) -> dict:
-    profile = {}
+def parse_context(path: Path) -> tuple[dict, dict]:
+    """Return (value_by_key, confidence_by_key) from the CONTEXT field tables.
+
+    Rows are `| key | value | source | confidence |`. The confidence column (✔/⚠) is what
+    tells us whether a value is safe to PRINT on a client deliverable — the value column
+    alone can look clean while the row is still flagged unresolved.
+    """
+    profile, confidence = {}, {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        m = re.match(r"\|\s*([a-z_0-9]+)\s*\|\s*(.*?)\s*\|", line)
-        if m:
-            profile[m.group(1)] = m.group(2)
-    return profile
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or not re.fullmatch(r"[a-z_0-9]+", cells[0]):
+            continue
+        profile[cells[0]] = cells[1]
+        confidence[cells[0]] = cells[-1] if len(cells) >= 4 else ""
+    return profile, confidence
+
+
+_ANNOT_RE = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def director_name(profile: dict, confidence: dict, warnings: list) -> str | None:
+    """Director name for the sign-off block, or None if it is not safely known.
+
+    This name gets PRINTED on a client deliverable, so an unresolved, low-confidence, or
+    role-unconfirmed value yields a blank dotted line instead of a guess (contract §10.4).
+    """
+    val = clean(profile.get("director_1"))
+    if not val:
+        warnings.append("CONTEXT director_1 ยังไม่ resolve — บล็อกลงนามเว้น ( .......... ) ไว้ให้กรอกมือ")
+        return None
+    if "⚠" in (confidence.get("director_1") or ""):
+        warnings.append(f"CONTEXT director_1 ({val!r}) confidence = ⚠ — บล็อกลงนามเว้นว่างไว้ ไม่เดาชื่อกรรมการ")
+        return None
+    # strip the trailing annotation audit-ingest attaches, e.g. "(กรรมการอีกคน: ...)"
+    return _ANNOT_RE.sub("", val).strip() or None
 
 
 def context_verdict(path: Path) -> str | None:
@@ -307,11 +353,22 @@ def import_client_tb(path: Path, sheet_name: str | None, warnings: list) -> list
 
 
 # ── styling helpers ────────────────────────────────────────────────────────────────
-BOLD = Font(bold=True)
-HEAD = Font(bold=True, size=13)
+def F(**kw) -> Font:
+    """A font in the locked FS typeface. Always name the font explicitly: a bare
+    Font(bold=True) carries no name and Excel silently falls back to Calibri."""
+    return Font(name=FS_FONT, size=FS_SIZE, **kw)
+
+
+PLAIN = F()
+BOLD = F(bold=True)
+HEAD = F(bold=True)
+WARN = F(color="9C6210")
 THIN = Side(style="thin", color="BBBBBB")
+RULE = Side(style="thin", color="000000")
 TOPBORDER = Border(top=THIN)
 TOPBOT = Border(top=THIN, bottom=Side(style="double", color="888888"))
+HEADRULE = Border(bottom=RULE)   # the rule under the period line, across A:G
+CENTER = Alignment(horizontal="center")
 
 
 def money(ws, cell):
@@ -332,7 +389,7 @@ def main() -> None:
     ctx_path = Path(args.context)
     if not ctx_path.exists():
         fail(f"CONTEXT.md not found: {ctx_path}")
-    profile = parse_context(ctx_path)
+    profile, confidence = parse_context(ctx_path)
     warnings: list[str] = []
 
     # Refuse to render off a broken/unverified CONTEXT.md — same gate as
@@ -360,10 +417,14 @@ def main() -> None:
     cy = be_year(profile.get("period_end", "")) or "⚠"
     py = be_year(profile.get("prior_period_end", "")) or (cy - 1 if isinstance(cy, int) else "⚠")
 
+    director = director_name(profile, confidence, warnings)
+
     tb_rows = import_client_tb(Path(args.client_tb), args.tb_sheet, warnings) if args.client_tb else []
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
+    # workbook default typeface (contract §10.1) — cells we style carry FS_FONT explicitly
+    wb._named_styles["Normal"].font = Font(name=DEFAULT_FONT, size=FS_SIZE)
 
     # ── hidden placeholder + caption vocabulary ────────────────────────────────────
     wb.create_sheet("0000").sheet_state = "veryHidden"
@@ -430,74 +491,132 @@ def main() -> None:
     mp.column_dimensions["H"].width = 32
 
     # ── งบการเงิน sheet: layout plan first, then render ─────────────────────────────
+    # The sheet is a STACK OF PRINTED PAGES, not a continuous table (contract §10.3): each
+    # statement is padded to a fixed ROWS_PER_PAGE grid and closed with an explicit page
+    # break, so a statement never splits and every page carries its own header.
     # Build an ordered list of row specs; the row number is its position. Statement lines
     # reference note-detail rows, so we resolve positions in a plan pass then render.
     plan: list[dict] = []
+    breaks: list[int] = []
 
-    def add(kind, **kw):
+    def add(kind, **kw) -> int:
         plan.append({"kind": kind, **kw})
+        return len(plan)  # 1-based row number of the row just added
 
-    # --- Balance sheet ---
-    add("title", text=company)
-    add("title", text="งบแสดงฐานะการเงิน")
-    add("title", text=f"ณ วันที่ {p_label}")
-    add("colhdr")
+    def page_start() -> int:
+        return breaks[-1] if breaks else 0
+
+    def pad_to(offset: int) -> None:
+        """Pad so the next added row lands at 1-based `offset` within the current page."""
+        while len(plan) < page_start() + offset - 1:
+            add("blank")
+
+    def endpage(label: str) -> None:
+        used = len(plan) - page_start()
+        if used > ROWS_PER_PAGE:
+            warnings.append(f"หน้า '{label}' ใช้ {used} แถว เกินกริด {ROWS_PER_PAGE} แถว/หน้า — "
+                            "Excel จะตัดหน้าเอง ทำให้งบขาดกลางหน้า (ดู contract §10.3)")
+        while len(plan) % ROWS_PER_PAGE:
+            add("blank")
+        breaks.append(len(plan))
+
+    is_partnership = "หจก" in entity or "ห้างหุ้นส่วน" in entity
+    period_line = f"สำหรับปีสิ้นสุดวันที่ {p_label}"
+
+    def stmt_head(title, date_line, *, first=False, bare=False):
+        """The page furniture every statement page opens with (contract §3.1).
+
+        `bare` drops the unit + column header: the notes page is prose, and its note-detail
+        area further down carries its own column header.
+        """
+        add("title", text=company if first else "=+A1", style="company")
+        add("title", text=title, style="stmt")
+        date_row = add("title", text=date_line, style="date")
+        add("blank")
+        if not bare:
+            add("unit")
+            add("colhdr", first=first)
+        return date_row
+
+    # --- page 1: balance sheet, assets side. Rows 1–3 are the literals every later page
+    #     refers back to with '=+A1' / '=+A2' / '=+A3'.
+    stmt_head("งบแสดงฐานะการเงิน", f"ณ วันที่ {p_label}", first=True)
     add("section", text="สินทรัพย์")
+    add("blank")
     add("subhdr", text="สินทรัพย์หมุนเวียน")
     for cap, _ in CUR_ASSETS:
         add("cap", cap=cap)
     add("subtotal", text="รวมสินทรัพย์หมุนเวียน", group="cur_assets")
+    add("blank")
     add("subhdr", text="สินทรัพย์ไม่หมุนเวียน")
     for cap, _ in NONCUR_ASSETS:
         add("cap", cap=cap)
     add("subtotal", text="รวมสินทรัพย์ไม่หมุนเวียน", group="noncur_assets")
-    add("total", text="รวมสินทรัพย์", group="assets", name="FS_TOTAL_ASSETS")
     add("blank")
+    add("total", text="รวมสินทรัพย์", group="assets", name="FS_TOTAL_ASSETS")
+    # director sign-off block, anchored near the foot of the page like ground truth
+    pad_to(27)
+    if not is_partnership:
+        add("sig_approval")
+    add("blank")
+    add("sig_certify")
+    add("blank")
+    add("sig_line")
+    add("sig_name")
+    endpage("งบแสดงฐานะการเงิน — สินทรัพย์")
+
+    # --- page 2: balance sheet, liabilities + equity side ---
+    stmt_head("=+A2", "=+A3")
     add("section", text="หนี้สินและส่วนของผู้ถือหุ้น")
+    add("blank")
     add("subhdr", text="หนี้สินหมุนเวียน")
     for cap, _ in CUR_LIAB:
         add("cap", cap=cap)
     add("subtotal", text="รวมหนี้สินหมุนเวียน", group="cur_liab")
+    add("blank")
     add("subhdr", text="หนี้สินไม่หมุนเวียน")
     for cap, _ in NONCUR_LIAB:
         add("cap", cap=cap)
     add("subtotal", text="รวมหนี้สินไม่หมุนเวียน", group="noncur_liab")
     add("total", text="รวมหนี้สิน", group="liab")
+    add("blank")
     add("subhdr", text="ส่วนของผู้ถือหุ้น")
     add("cap", cap=SHARE_CAP[0])
     add("re_bs")  # retained earnings (from equity statement closing)
     add("subtotal", text="รวมส่วนของผู้ถือหุ้น", group="equity", name="FS_TOTAL_EQUITY")
-    add("total", text="รวมหนี้สินและส่วนของผู้ถือหุ้น", group="liabeq", name="FS_TOTAL_LIAB_EQUITY")
-    add("checkrow")  # BS-balances tie-out flag
     add("blank")
+    add("total", text="รวมหนี้สินและส่วนของผู้ถือหุ้น", group="liabeq", name="FS_TOTAL_LIAB_EQUITY")
+    add("checkrow")  # BS tie-out flag — rendered in column I, outside the print area
+    endpage("งบแสดงฐานะการเงิน — หนี้สินและส่วนของผู้ถือหุ้น")
 
-    # --- Income statement ---
-    add("title", text=company)
-    add("title", text="งบกำไรขาดทุน")
-    add("title", text=f"สำหรับปีสิ้นสุดวันที่ {p_label}")
-    add("colhdr")
+    # --- page 3: income statement ---
+    is_date_row = stmt_head("งบกำไรขาดทุน", period_line)
     add("section", text="รายได้")
     for cap, _ in REVENUE:
         add("cap", cap=cap)
     add("subtotal", text="รวมรายได้", group="revenue")
+    add("blank")
     add("section", text="ค่าใช้จ่าย")
     for cap, _ in EXPENSES:
         add("cap", cap=cap)
     add("subtotal", text="รวมค่าใช้จ่าย", group="expenses")
+    add("blank")
     add("pbt", text="กำไร(ขาดทุน)ก่อนภาษีเงินได้", name="TAX_NET_PROFIT")
     add("taxline", text="ค่าใช้จ่ายภาษีเงินได้")
     add("netprofit", text="กำไร(ขาดทุน)สุทธิ", name="FS_NET_PROFIT")
-    add("blank")
+    endpage("งบกำไรขาดทุน")
 
-    # --- Statement of changes in equity (minimal) ---
-    add("title", text="งบแสดงการเปลี่ยนแปลงส่วนของผู้ถือหุ้น")
+    # --- page 4: statement of changes in equity (minimal) ---
+    stmt_head("งบแสดงการเปลี่ยนแปลงส่วนของผู้ถือหุ้น", f"=+A{is_date_row}")
     add("eq_open", text="ยอดคงเหลือต้นปี — กำไร(ขาดทุน)สะสม")
     add("eq_profit", text="กำไร(ขาดทุน)สุทธิสำหรับปี")
     add("eq_close", text="ยอดคงเหลือปลายปี — กำไร(ขาดทุน)สะสม")
-    add("blank")
+    endpage("งบแสดงการเปลี่ยนแปลงส่วนของผู้ถือหุ้น")
 
-    # --- Notes ---
-    add("title", text="หมายเหตุประกอบงบการเงิน")
+    # --- page 5+: notes. Everything from the note-detail marker down is rebuilt by skill
+    #     5.5 (expand_notes), so it is deliberately the LAST thing on the sheet and is left
+    #     to flow across pages naturally rather than onto the fixed grid.
+    stmt_head("หมายเหตุประกอบงบการเงิน", f"=+A{is_date_row}", bare=True)
     add("note_general")
     add("note_basis")
     add("note_policy")
@@ -538,18 +657,53 @@ def main() -> None:
         "liabeq": ["cur_liab", "noncur_liab", "equity_all"],
     }
 
+    first_colhdr: int | None = None
+
     for s in plan:
         row = s["row"]
         k = s["kind"]
         a = ws.cell(row=row, column=1)
+        a.font = PLAIN  # default; the bold kinds below override it
         if k == "title":
+            # titles are merged across A:G and centred, with a rule under the period line
             a.value = s["text"]
-            a.font = HEAD if s["text"] in (company,) else BOLD
-            a.alignment = Alignment(horizontal="left")
+            a.font = BOLD
+            a.alignment = CENTER
+            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+            if s.get("style") == "date":
+                for c in range(1, 8):
+                    ws.cell(row=row, column=c).border = HEADRULE
+        elif k == "unit":
+            u = ws.cell(row=row, column=5, value="หน่วย : บาท")
+            u.font = BOLD
+            u.alignment = CENTER
         elif k == "colhdr":
+            # later pages reference the first column header so the years stay in one place
+            src = first_colhdr if not s.get("first") and first_colhdr else None
             ws.cell(row=row, column=3, value="หมายเหตุ").font = BOLD
-            ws.cell(row=row, column=5, value=cy).font = BOLD
-            ws.cell(row=row, column=7, value=py).font = BOLD
+            e = ws.cell(row=row, column=5, value=f"=+E{src}" if src else cy)
+            g = ws.cell(row=row, column=7, value=f"=+G{src}" if src else py)
+            e.font = g.font = BOLD
+            e.alignment = g.alignment = CENTER
+            ws.cell(row=row, column=3).alignment = CENTER
+            if first_colhdr is None:
+                first_colhdr = row
+        elif k == "sig_approval":
+            a.value = ("งบการเงินนี้ได้รับอนุมัติจากที่ประชุมใหญ่สามัญผู้ถือหุ้น "
+                       f"ครั้งที่ 1/{cy + 1 if isinstance(cy, int) else '⟨ปี⟩'} "
+                       "เมื่อวันที่.......................................................")
+            a.font = PLAIN
+        elif k == "sig_certify":
+            a.value = "ขอรับรองว่าถูกต้อง"
+            a.font = PLAIN
+        elif k == "sig_line":
+            a.value = ("ลงชื่อ...................................................."
+                       + ("หุ้นส่วนผู้จัดการ" if is_partnership else "กรรมการ"))
+            a.font = PLAIN
+        elif k == "sig_name":
+            # never invent the name: unresolved/low-confidence → dotted blank for the human
+            a.value = f"       ( {director} )" if director else "       ( .......................................... )"
+            a.font = PLAIN
         elif k in ("section", "subhdr"):
             a.value = s["text"]
             a.font = BOLD
@@ -557,7 +711,9 @@ def main() -> None:
             cap = s["cap"]
             a.value = cap
             nr = cap_note_row[cap]
-            ws.cell(row=row, column=3, value=cap_note_index(cap)).alignment = Alignment(horizontal="center")
+            nc = ws.cell(row=row, column=3, value=cap_note_index(cap))
+            nc.alignment = CENTER
+            nc.font = PLAIN
             _put(ws, f"E{row}", f"=+E{nr}")
             _put(ws, f"G{row}", f"=+G{nr}")
         elif k == "re_bs":
@@ -621,12 +777,16 @@ def main() -> None:
             _put(ws, f"E{row}", f"=E{row_of['eq_open']}+E{row_of['eq_profit']}")
             ws[f"E{row}"].border = TOPBORDER
         elif k == "checkrow":
-            a.value = "ตรวจสอบ: สินทรัพย์ = หนี้สิน+ทุน (ต้องเป็น 0)"
-            a.font = Font(italic=True, color="9C6210")
+            # tie-out lives in column I — OUTSIDE the $A:$G print area (contract §3.1/§10.2),
+            # so it never prints on the client's งบ but stays live for the auditor and 5.5.
+            lbl = ws.cell(row=row, column=CHECK_COL,
+                          value="ตรวจสอบ: สินทรัพย์ = หนี้สิน+ทุน (ต้องเป็น 0)")
+            lbl.font = Font(name=FS_FONT, size=FS_SIZE, italic=True, color="9C6210")
             ta = named.get("FS_TOTAL_ASSETS_CY")
             tle = named.get("FS_TOTAL_LIAB_EQUITY_CY")
             if ta and tle:
-                _put(ws, f"E{row}", f"=E{ta}-E{tle}")
+                chk = ws.cell(row=row, column=CHECK_COL + 1, value=f"=E{ta}-E{tle}")
+                chk.number_format = NUMFMT
         elif k == "note_general":
             a.value = "1. ข้อมูลทั่วไป"
             a.font = BOLD
@@ -641,23 +801,46 @@ def main() -> None:
             cap = s["cap"]
             a.value = cap
             a.alignment = Alignment(indent=1)
-            ws.cell(row=row, column=3, value=cap_note_index(cap)).alignment = Alignment(horizontal="center")
+            nc = ws.cell(row=row, column=3, value=cap_note_index(cap))
+            nc.alignment = CENTER
+            nc.font = PLAIN
             side = SIDE[cap]
             _put(ws, f"E{row}", sumif(cap, side))
             _put(ws, f"G{row}", sumif(cap, "E" if side == "C" else "F"))
         elif k == "blank":
             pass
-        # apply money format to E/G on value rows
+        # apply money format + the FS font to E/G on value rows
         if k in ("cap", "subtotal", "total", "pbt", "taxline", "netprofit", "re_bs",
-                 "eq_open", "eq_profit", "eq_close", "note_detail", "checkrow"):
-            money(ws, f"E{row}")
-            money(ws, f"G{row}")
+                 "eq_open", "eq_profit", "eq_close", "note_detail"):
+            for col in ("E", "G"):
+                money(ws, f"{col}{row}")
+                if ws[f"{col}{row}"].font.name != FS_FONT:
+                    ws[f"{col}{row}"].font = PLAIN
 
-    ws.column_dimensions["A"].width = 46
-    ws.column_dimensions["B"].width = 3
-    ws.column_dimensions["C"].width = 8
-    for col in ("D", "E", "F", "G"):
-        ws.column_dimensions[col].width = 16
+    # ── print setup for the งบ (contract §10) — this sheet is a client deliverable ──────
+    for col, w in COL_W.items():
+        ws.column_dimensions[col].width = w
+    last_row = len(plan)
+    for r in range(1, last_row + 1):
+        ws.row_dimensions[r].height = ROW_H
+
+    ws.print_area = f"$A$1:$G${last_row}"
+    ps = ws.page_setup
+    ps.paperSize = ws.PAPERSIZE_A4
+    ps.orientation = ws.ORIENTATION_PORTRAIT
+    ps.fitToWidth = 1
+    ps.fitToHeight = 0          # 1 page wide, flow as tall as it needs
+    ps.firstPageNumber = FIRST_PAGE_NUMBER   # bound behind ใบปะหน้า + หน้ารายงานผู้สอบ
+    ps.useFirstPageNumber = True
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_margins = PageMargins(left=0.79, right=0.2, top=0.59, bottom=0.39,
+                                  header=0.51, footer=0.28)
+    ws.oddFooter.right.text = "&P"
+    ws.oddFooter.right.font = f"{FOOTER_FONT},Regular"
+    ws.oddFooter.right.size = 14
+    # explicit breaks so each statement owns its page and never splits mid-statement
+    for b in breaks:
+        ws.row_breaks.append(Break(id=b))
 
     # ── ภาษีเงินได้ (tax shell) ─────────────────────────────────────────────────────
     tx = wb.create_sheet(TAX)

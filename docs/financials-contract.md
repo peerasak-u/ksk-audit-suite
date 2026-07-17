@@ -112,20 +112,34 @@ AJE content is 100% human judgment — skill 5 never invents entries.
 
 ### 3.1 Vertical layout (canonical, our template controls the rows)
 Ground truth varies ([312] BS rows 7–21, [364] 7–20; notes start 161 vs 169), so we
-fix OUR own canonical layout and anchor by defined names, not absolute rows:
+fix OUR own canonical layout and anchor by defined names, not absolute rows.
+
+The sheet is **a stack of printed pages, not a continuous table** — see §10 for the print
+contract that governs it. One statement per page, on a fixed `ROWS_PER_PAGE` grid:
 
 ```
-1–6      company header  (A1 name, A2 'งบแสดงฐานะการเงิน', A3 date, row6: C=หมายเหตุ E=CY G=PY)
-7–..     งบแสดงฐานะการเงิน — สินทรัพย์  (ends 'รวมสินทรัพย์')
-..       งบแสดงฐานะการเงิน — หนี้สินและส่วนของผู้ถือหุ้น  (ends 'รวมหนี้สินและส่วนของผู้ถือหุ้น')
-..       director sign-off block (fixed boilerplate, repeats each statement page)
-..       งบกำไรขาดทุน  (ends 'กำไร(ขาดทุน)สุทธิ')
-..       งบแสดงการเปลี่ยนแปลงส่วนของผู้ถือหุ้น  (cols: ทุนที่ชำระแล้ว | กำไรสะสม | รวม)
-..       หมายเหตุประกอบงบการเงิน  (note 1 ข้อมูลทั่วไป → note 2 เกณฑ์ → note 3 นโยบาย → notes 4+)
-..       note-detail / schedule area  (the rows the statement lines pull from)
+page 1   งบแสดงฐานะการเงิน — สินทรัพย์  (ends 'รวมสินทรัพย์') + director sign-off block
+page 2   งบแสดงฐานะการเงิน — หนี้สินและส่วนของผู้ถือหุ้น  (ends 'รวมหนี้สินและส่วนของผู้ถือหุ้น')
+page 3   งบกำไรขาดทุน  (ends 'กำไร(ขาดทุน)สุทธิ')
+page 4   งบแสดงการเปลี่ยนแปลงส่วนของผู้ถือหุ้น
+page 5+  หมายเหตุประกอบงบการเงิน  (note 1 ข้อมูลทั่วไป → note 2 เกณฑ์ → note 3 นโยบาย → notes 4+)
+         then the note-detail area (the rows the statement lines pull from), which
+         skill 5.5 rebuilds and which flows across as many pages as it needs.
+```
+Every page opens with the same 6-row furniture:
+```
++0  company name          (page 1 literal; every later page '=+A1')
++1  statement title       (BS page 2 '=+A2'; other statements literal)
++2  period line           (BS page 2 '=+A3'; equity/notes '=+A<IS period row>')
++3  (blank)
++4  E: 'หน่วย : บาท'
++5  C: 'หมายเหตุ'  E: CY  G: PY   (later pages ref the first column header)
 ```
 Columns everywhere: **A**=caption, **C**=note#, **E**=current year, **G**=prior year.
-(H/I reserved for tie-out check formulas, not printed.)
+**B/D/F carry no data** — D and F are thin print gutters (§10), B is caption spill-over.
+**H onward is off-page**: the BS tie-out check formula lives in **column I**, outside the
+`$A:$G` print area, so it never prints on a client deliverable but stays visible to the
+auditor and readable by skill 5.5.
 
 ### 3.2 The 4-layer formula chain (this is what "approach A" means)
 ```
@@ -264,10 +278,87 @@ propagate:
 
 ---
 
+## 10. Print contract — the งบ is a printed deliverable (skill 5 sets it, 5.5 preserves it)
+
+The `4 งบการเงิน` workbook is not an internal grid: its `งบการเงิน` sheet gets **printed and
+bound behind `ใบปะหน้างบการเงิน.docx` (skill 2's cover) and the auditor's report**, then given
+to the client and filed with DBD. All 10 ground-truth `4 *` files agree on the settings below,
+so these are a **locked format**, not a preference. Verified 2026-07-17 against folder 5.
+
+The single strongest tell: **every ground-truth file sets `firstPageNumber=4`** — the งบ is
+page 4 onward because the cover + report occupy pages 1–3. A งบ with no page setup at all
+(what skill 5 produced before this section existed) is a *format defect*, not a cosmetic one.
+
+### 10.1 Sheet-level settings (`งบการเงิน`)
+| setting | value | why |
+|---|---|---|
+| paper / orientation | A4 (`paperSize=9`), portrait | 10/10 ground truth |
+| `firstPageNumber` / `useFirstPageNumber` | **4** / true | bound after cover + report (pages 1–3) |
+| footer | right-aligned page number, Angsana New 14 (`&R&"Angsana New,Regular"&14&P`) | 10/10 |
+| fit | `fitToPage`, `fitToWidth=1`, `fitToHeight=0` | 1 page wide, flow tall |
+| print area | `$A$1:$G$<last used row>` | keeps col I tie-out off the page |
+| margins (in) | L 0.79 · R 0.2 · T 0.59 · B 0.39 (header 0.51 · footer 0.28) | modal ground truth |
+| default (Normal) font | Cordia New 14 | ground truth workbook default |
+| cell font on `งบการเงิน` | **Browallia New 14** | 10/10 — every statement cell |
+| row height | **21.0 pt, uniform** | this is what makes the page grid predictable |
+| number format | accounting `_(* #,##0.00_);_(* \(#,##0.00\);_(* \-??_);_(@_)` | ground truth |
+
+### 10.2 Column widths — D and F are print gutters, not data columns
+```
+A 31.7   B 16.7   C 16.7   D 0.9   E 16.7   F 0.9   G 16.7      (Σ ≈ 100.3)
+caption  spill    note#    gutter  CY       gutter  PY
+```
+This is tuned, not arbitrary: Σ ≈ 100.3 char-units ≈ 7.31in ≈ the 7.28in printable width of
+A4 portrait at the §10.1 margins. **Do not widen D/F to data width** — they carry no values,
+and doing so pushes the sheet past one page wide (the original defect: `D=F=16` → Σ 121).
+
+### 10.3 The page grid
+`ROWS_PER_PAGE = 36` (36 × 21pt = 756pt ≤ the 771pt printable height of A4 at these margins).
+Each statement is padded out to the grid and closed with an **explicit row break**, so a
+statement never splits across a page and page N always starts with its own §3.1 header.
+Skill 5 must warn if any statement's content exceeds the grid rather than silently overflow.
+
+Titles (company / statement / period) are **merged `A:G` and centre-aligned**; the period row
+carries a thin bottom border across `A:G` as the header rule.
+
+### 10.4 Director sign-off block (bottom of the BS-assets page)
+Fixed boilerplate, verbatim from ground truth (9/10 บจ. files):
+```
+งบการเงินนี้ได้รับอนุมัติจากที่ประชุมใหญ่สามัญผู้ถือหุ้น ครั้งที่ 1/<CY+1> เมื่อวันที่.......................
+(blank)
+ขอรับรองว่าถูกต้อง
+(blank)
+ลงชื่อ....................................................................กรรมการ
+       ( <director name> )
+```
+**Variants:** หจก. has **no** approval line (a partnership has no shareholder meeting) and signs
+**หุ้นส่วนผู้จัดการ**, not กรรมการ — confirmed in `[485] แจใจ`.
+**Never invent the director name.** Take it from CONTEXT `director_1`; if that field is ⚠/⟨FILL⟩,
+or its confidence column is ⚠, or the value is annotated *unconfirmed*, emit the dotted `( ...... )`
+line and warn — do not guess (§ project rule: never-invent).
+
+### 10.5 Skill 5.5's obligation
+`expand_notes` rebuilds everything from the note marker down, which is **below** every statement
+page break — so the §10.3 breaks survive. But 5.5 **must reset `print_area` to `$A$1:$G$<new last
+row>`** after expanding, or the added note rows print outside the page. 5.5 must not touch the
+statement pages' geometry.
+
+---
+
 ## Implementation status
+- **§10 print contract — built (2026-07-17).** Added after review found the `งบการเงิน` sheet
+  shipped with *no page setup at all* across all 13 generated clients: no paper size, no print
+  area, no footer, Calibri 11, default row heights, and D/F at data width (Σ 121 units = 8.82in
+  → 21% past A4's 7.28in printable width, i.e. a second page sideways). Root cause: this contract
+  specified the formula chain but never the print format, so the scaffold built a data grid.
+  Skill 5 now sets §10.1–10.4 (verified against all 10 ground-truth files: paper, first page 4,
+  footer, print area, fonts, 21pt grid, column widths, sign-off block incl. the หจก. variant);
+  skill 5.5 does §10.5; `audit-orchestrate` gates it (`qa_fs_print`, verified to flag the old
+  format on 13 dimensions and pass the new one). Note the ground-truth files disagree with each
+  other on col-A width (28.1–45.3) and margins (0.24–0.79) — we take the modal value.
 - **Skill 5 (`audit-workpaper`) — built.** Scaffolds บจ. going-concern: the full §1 sheet set,
-  the §3 four-layer formula chain, §3.3 defined names, the §4 caption dropdown, and §7
-  boilerplate notes. Best-effort client-TB import. Verified: a balanced TB flows through the
+  the §3 four-layer formula chain, §3.3 defined names, the §4 caption dropdown, §7
+  boilerplate notes, and the §10 print contract. Best-effort client-TB import. Verified: a balanced TB flows through the
   chain to a balancing BS (tie-out row = 0). See `.claude/skills/audit-workpaper/`.
 - **Skill 5.5 (`audit-financials`) — built.** QA gate (unsaved guard, error-cell scan, BS
   balance CY/PY, tie-out row, Mapping-H completeness + valid vocabulary, profit↔tax-sheet tie,

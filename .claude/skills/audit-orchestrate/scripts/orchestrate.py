@@ -48,7 +48,10 @@ TARGETS = [
 # locked format invariants
 PLANNING_SHEETS = ["ข้อมูลลูกค้า", "ประเภทบัญชี", "000", "001", "101", "102", "103",
                    "202", "203 TB (2)", "301", "302", "401", "601", "608"]
-FS_CORE_SHEETS = ["งบการเงิน", "TB", "Mapping", "ปรับปรุง", "ภาษีเงินได้"]
+FS_SHEET = "งบการเงิน"
+FS_CORE_SHEETS = [FS_SHEET, "TB", "Mapping", "ปรับปรุง", "ภาษีเงินได้"]
+# print contract (docs/financials-contract.md §10) — D/F are thin print gutters, not data
+FS_COL_WIDTHS = {"A": 31.7, "B": 16.7, "C": 16.7, "D": 0.9, "E": 16.7, "F": 0.9, "G": 16.7}
 
 
 def classify(name: str) -> str | None:
@@ -111,6 +114,40 @@ def qa_planning(path: Path) -> dict:
             "notes": ([f"missing fixed sheets: {', '.join(missing)}"] if missing else ["14 fixed sheets present"])}
 
 
+def qa_fs_print(wb) -> list:
+    """Check the งบ's print contract (docs/financials-contract.md §10).
+
+    The งบ is printed and bound behind the cover + auditor's report, so page setup is part
+    of its locked format. Skill 5 once emitted this sheet with no page setup at all — it
+    looked fine on screen and printed as an unusable grid, so it is checked explicitly.
+    """
+    if FS_SHEET not in wb.sheetnames:
+        return ["✗ ไม่มีชีต งบการเงิน — ตรวจ print contract ไม่ได้"]
+    ws = wb[FS_SHEET]
+    ps = ws.page_setup
+    bad = []
+    if str(ps.paperSize) != "9" or ps.orientation != "portrait":
+        bad.append(f"paper/orientation = {ps.paperSize}/{ps.orientation} (ต้องเป็น A4 portrait)")
+    if str(ps.firstPageNumber) != "4" or not ps.useFirstPageNumber:
+        bad.append(f"firstPageNumber = {ps.firstPageNumber} (ต้องเป็น 4 — งบต่อท้ายใบปะหน้า+หน้ารายงาน)")
+    if not ws.print_area:
+        bad.append("ไม่ได้ตั้ง print area (ต้องเป็น $A$1:$G$<แถวสุดท้าย>)")
+    elif not re.search(r"\$A\$1:\$G\$\d+", str(ws.print_area)):
+        bad.append(f"print area = {ws.print_area} (ต้องครอบ $A$1:$G$<แถวสุดท้าย>)")
+    if "&P" not in (ws.oddFooter.right.text or ""):
+        bad.append("ไม่มีเลขหน้าใน footer ขวา")
+    for col, want in FS_COL_WIDTHS.items():
+        got = ws.column_dimensions[col].width if col in ws.column_dimensions else None
+        if got is None or abs(got - want) > 0.5:
+            bad.append(f"คอลัมน์ {col} กว้าง {got} (ต้อง ~{want} — D/F เป็นช่องคั่น ไม่ใช่คอลัมน์ข้อมูล)")
+    heights = {ws.row_dimensions[r].height for r in range(1, min(ws.max_row, 40) + 1)}
+    if heights - {21.0}:
+        bad.append(f"ความสูงแถวไม่คงที่ 21pt ({sorted(h for h in heights if h != 21.0)[:3]}) — กริดหน้าเพี้ยน")
+    if not (ws.row_breaks and ws.row_breaks.brk):
+        bad.append("ไม่มี page break — งบจะถูกตัดกลางหน้า")
+    return [f"✗ print contract: {b}" for b in bad] or ["print contract ครบ (A4, หน้าเริ่ม 4, print area, กริด 21pt)"]
+
+
 def qa_workpaper(path: Path, *, expect_final=False) -> dict:
     import openpyxl
     try:
@@ -125,6 +162,10 @@ def qa_workpaper(path: Path, *, expect_final=False) -> dict:
         notes.append(f"missing core FS sheets: {', '.join(missing)}")
     else:
         notes.append("core FS sheets present")
+    print_notes = qa_fs_print(wb)
+    notes.extend(print_notes)
+    if any(n.startswith("✗") for n in print_notes):
+        ok = False
     # human-gate signal: has the WP been opened & saved in Excel (cached values present)?
     dn = wb.defined_names.get("FS_TOTAL_ASSETS_CY")
     adjusted = None

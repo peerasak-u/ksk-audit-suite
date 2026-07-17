@@ -48,7 +48,12 @@ FS = "งบการเงิน"
 MAP = "Mapping"
 TB = "TB"
 TAX = "ภาษีเงินได้"
-NUMFMT = "#,##0.00;(#,##0.00)"
+# Print contract (docs/financials-contract.md §10) — must match the scaffold's, or the
+# rebuilt note rows print in a different typeface/format from the statements above them.
+NUMFMT = r"_(* #,##0.00_);_(* \(#,##0.00\);_(* \-??_);_(@_)"
+FS_FONT = "Browallia New"
+FS_SIZE = 14
+ROW_H = 21.0
 NOTE_MARKER = "รายละเอียดประกอบ"       # scaffold's reserved note-detail section header (col A)
 TOL = 0.01                              # rounding tolerance for numeric ties (baht)
 
@@ -92,8 +97,15 @@ ALL_CAPTIONS = (
 SIDE = dict(CUR_ASSETS + NONCUR_ASSETS + CUR_LIAB + NONCUR_LIAB + [SHARE_CAP, RETAINED] + REVENUE + EXPENSES)
 CAPSET = set(ALL_CAPTIONS)
 
-BOLD = Font(bold=True)
-HEAD = Font(bold=True, size=12)
+def F(**kw) -> Font:
+    """A font in the locked FS typeface (§10.1). Always name it: a bare Font(bold=True)
+    carries no name and Excel silently falls back to Calibri."""
+    return Font(name=FS_FONT, size=FS_SIZE, **kw)
+
+
+PLAIN = F()
+BOLD = F(bold=True)
+HEAD = F(bold=True)
 WARN = Font(color="9C6210")
 THIN = Side(style="thin", color="BBBBBB")
 TOPBORDER = Border(top=THIN)
@@ -320,6 +332,20 @@ def group_mapping_accounts(wb_form) -> dict[str, list[tuple[int, str]]]:
     return groups
 
 
+def repaginate(ws) -> None:
+    """Re-extend the print area over the rebuilt note rows (contract §10.5).
+
+    The งบ is a printed deliverable whose print area is pinned to `$A$1:$G$<last row>`.
+    Expanding the notes changes the last row, so without this the added note rows fall
+    outside the printed page. The statement pages' explicit breaks sit above the note
+    marker and are deliberately left untouched.
+    """
+    ws.print_area = f"$A$1:$G${ws.max_row}"
+    for r in range(1, ws.max_row + 1):
+        if ws.row_dimensions[r].height is None:
+            ws.row_dimensions[r].height = ROW_H
+
+
 def expand_notes(wb_form, groups: dict) -> int:
     """Rewrite the งบการเงิน note-detail section with itemized per-account rows.
 
@@ -378,7 +404,7 @@ def expand_notes(wb_form, groups: dict) -> int:
     #     (live-linked to its Mapping row) + a subtotal. All live formulas, fully editable.
     row = note_start
     ws.cell(row, 1, "รายละเอียดประกอบรายการในงบการเงิน (หมายเหตุ 4 เป็นต้นไป)").font = HEAD
-    ws.cell(row, 5, "(หน่วย: บาท)").font = Font(size=9, italic=True)
+    ws.cell(row, 5, "(หน่วย: บาท)").font = F(italic=True)
     row += 2
     expanded = 0
     for cap in ALL_CAPTIONS:
@@ -393,10 +419,13 @@ def expand_notes(wb_form, groups: dict) -> int:
         row += 1
         first = row
         for maprow, name in accts:
-            ws.cell(row, 1, name).alignment = Alignment(indent=1)
+            nm = ws.cell(row, 1, name)
+            nm.alignment = Alignment(indent=1)
+            nm.font = PLAIN
             ec = ws.cell(row, 5, f"=+{MAP}!{cy_col}{maprow}")
             gc = ws.cell(row, 7, f"=+{MAP}!{py_col}{maprow}")
             ec.number_format = gc.number_format = NUMFMT
+            ec.font = gc.font = PLAIN
             row += 1
         st = ws.cell(row, 1, f"รวม{cap}")
         st.font = BOLD
@@ -444,6 +473,7 @@ def main() -> None:
     # validation passed → expand note detail into a NEW copy (never touch the working file)
     groups = group_mapping_accounts(wb_form)
     expanded = expand_notes(wb_form, groups)
+    repaginate(wb_form[FS])
 
     out_path = Path(args.out) if args.out else wp_path.with_name(f"{wp_path.stem} (final){wp_path.suffix}")
     wb_form.save(out_path)
